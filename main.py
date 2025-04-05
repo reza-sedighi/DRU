@@ -30,6 +30,8 @@ def get_args_parser(parser):
     # Optimization hyperparameters
     parser.add_argument('--batch_size', default=1, type=int)
     parser.add_argument('--eval_batch_size', default=1, type=int)
+    parser.add_argument('--gradient_accumulation_steps', default=1, type=int,
+                        help='Number of steps to accumulate gradient before optimizer step')
     parser.add_argument('--lr', default=2e-4, type=float)
     parser.add_argument('--lr_backbone', default=2e-5, type=float)
     parser.add_argument('--lr_linear_proj', default=2e-5, type=float)
@@ -133,9 +135,10 @@ def single_domain_training(model, device):
             epoch=epoch,
             clip_max_norm=args.clip_max_norm,
             print_freq=args.print_freq,
-            flush=args.flush
+            flush=args.flush,
+            gradient_accumulation_steps=args.gradient_accumulation_steps
         )
-        # write_loss(epoch, 'single_domain', loss_train)
+        write_loss(epoch, 'single_domain', loss_train)
         lr_scheduler.step()
         # Evaluate
         ap50_per_class, loss_val = evaluate(
@@ -154,7 +157,7 @@ def single_domain_training(model, device):
         if epoch == args.epoch - 1:
             save_ckpt(model, output_dir/'model_last.pth', args.distributed)
         # Write the evaluation results to tensorboard
-        # write_ap50(epoch, 'single_domain', map50, ap50_per_class, idx_to_class)
+        write_ap50(epoch, 'single_domain', map50, ap50_per_class, idx_to_class)
     # Record the end time
     end_time = time.time()
     total_time_str = str(datetime.timedelta(seconds=int(end_time - start_time)))
@@ -230,7 +233,8 @@ def teaching(model_stu, device):
                 stu_buffer_mask=stu_buffer_mask,
                 res_dict=res_dict,
                 use_pseudo_label_weights=args.use_pseudo_label_weights,
-                use_loss_student=args.use_loss_student
+                use_loss_student=args.use_loss_student,
+                gradient_accumulation_steps=args.gradient_accumulation_steps
             )
         elif args.mode == "teaching_standard":
             loss_train, loss_target_dict = train_one_epoch_teaching_standard(
@@ -247,6 +251,7 @@ def teaching(model_stu, device):
                 print_freq=args.print_freq,
                 flush=args.flush,
                 fix_update_iter=args.fix_update_iter,
+                gradient_accumulation_steps=args.gradient_accumulation_steps
             )
         else:
             raise ValueError('Invalid mode: ' + args.mode)

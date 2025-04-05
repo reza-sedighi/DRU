@@ -1,7 +1,8 @@
 N_GPUS=1
-BATCH_SIZE=8
+BATCH_SIZE=1
 DATA_ROOT=./data
 OUTPUT_DIR=./outputs/def-detr-base/city2foggy/source_only
+GRAD_ACCUM_STEPS=1
 
 CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=4 torchrun \
 --rdzv_endpoint localhost:26500 \
@@ -17,6 +18,7 @@ main.py \
 --target_dataset foggy_cityscapes \
 --batch_size ${BATCH_SIZE} \
 --eval_batch_size ${BATCH_SIZE} \
+--gradient_accumulation_steps ${GRAD_ACCUM_STEPS} \
 --lr 2e-4 \
 --lr_backbone 2e-5 \
 --lr_linear_proj 2e-5 \

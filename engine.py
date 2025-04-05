@@ -32,7 +32,8 @@ def train_one_epoch_standard(model: torch.nn.Module,
                              epoch: int,
                              clip_max_norm: float = 0.0,
                              print_freq: int = 20,
-                             flush: bool = True):
+                             flush: bool = True,
+                             gradient_accumulation_steps: int = 1):
     """
     Train the standard detection model, using only labelled training set source.
     """
@@ -44,27 +45,36 @@ def train_one_epoch_standard(model: torch.nn.Module,
     # Training statistics
     epoch_loss = torch.zeros(1, dtype=torch.float, device=device, requires_grad=False)
     epoch_loss_dict = defaultdict(float)
+    optimizer.zero_grad()  # Zero gradients at the beginning of training
+    
     for i in range(len(data_loader)):
         # Forward
         out = model(images, masks)
         # Loss
         loss, loss_dict = criterion(out, annotations)
+        # Scale the loss according to gradient accumulation steps
+        loss = loss / gradient_accumulation_steps
         # Backward
-        optimizer.zero_grad()
         loss.backward()
-        if clip_max_norm > 0:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), clip_max_norm)
-        optimizer.step()
-        # Record loss
-        epoch_loss += loss.detach()
+        
+        # Record loss (use the original non-scaled loss for logging)
+        epoch_loss += loss.detach() * gradient_accumulation_steps
         for k, v in loss_dict.items():
             epoch_loss_dict[k] += v.detach().cpu().item()
+            
+        # Only perform optimization step after accumulating gradients
+        if (i + 1) % gradient_accumulation_steps == 0 or (i + 1) == len(data_loader):
+            if clip_max_norm > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), clip_max_norm)
+            optimizer.step()
+            optimizer.zero_grad()
+            
         # Data pre-fetch
         images, masks, annotations = fetcher.next()
         # Log
         if is_main_process() and (i + 1) % print_freq == 0:
             print('Training epoch ' + str(epoch) + ' : [ ' + str(i + 1) + '/' + str(len(data_loader)) + ' ] ' +
-                  'total loss: ' + str(loss.detach().cpu().numpy()), flush=flush)
+                  'total loss: ' + str(loss.detach().cpu().numpy() * gradient_accumulation_steps), flush=flush)
     # Final process of training statistic
     epoch_loss /= len(data_loader)
     for k, v in epoch_loss_dict.items():
@@ -88,9 +98,10 @@ def train_one_epoch_teaching_standard(student_model: torch.nn.Module,
                                       clip_max_norm: float = 0.0,
                                       print_freq: int = 20,
                                       flush: bool = True,
-                                      fix_update_iter: int = 1):
+                                      fix_update_iter: int = 1,
+                                      gradient_accumulation_steps: int = 1):
     """
-    Train the student model with the teacher model, using only unlabeled training set target .
+    Train the student model with the teacher model, using only unlabeled training set target.
     """
     start_time = time.time()
     student_model.train()
@@ -105,7 +116,8 @@ def train_one_epoch_teaching_standard(student_model: torch.nn.Module,
     # Training data statistics
     epoch_target_loss_dict = defaultdict(float)
     total_iters = len(target_loader)
-
+    optimizer.zero_grad()  # Zero gradients at the beginning
+    
     for iter in range(total_iters):
         # Target teacher forward
         with torch.no_grad():
@@ -117,16 +129,21 @@ def train_one_epoch_teaching_standard(student_model: torch.nn.Module,
         target_loss, target_loss_dict = criterion_pseudo(target_student_out, pseudo_labels)
 
         loss = target_loss
+        # Scale the loss according to gradient accumulation steps
+        loss = loss / gradient_accumulation_steps
 
         # Backward
-        optimizer.zero_grad()
         loss.backward()
-        if clip_max_norm > 0:
-            torch.nn.utils.clip_grad_norm_(student_model.parameters(), clip_max_norm)
-        optimizer.step()
+        
+        # Only perform optimization step after accumulating gradients
+        if (iter + 1) % gradient_accumulation_steps == 0 or (iter + 1) == total_iters:
+            if clip_max_norm > 0:
+                torch.nn.utils.clip_grad_norm_(student_model.parameters(), clip_max_norm)
+            optimizer.step()
+            optimizer.zero_grad()
 
-        # Record epoch losses
-        epoch_loss += loss.detach()
+        # Record epoch losses (use the original non-scaled loss for logging)
+        epoch_loss += loss.detach() * gradient_accumulation_steps
 
         # update loss_dict
         for k, v in target_loss_dict.items():
@@ -147,7 +164,7 @@ def train_one_epoch_teaching_standard(student_model: torch.nn.Module,
         # Log
         if is_main_process() and (iter + 1) % print_freq == 0:
             print('Teaching epoch ' + str(epoch) + ' : [ ' + str(iter + 1) + '/' + str(total_iters) + ' ] ' +
-                  'total loss: ' + str(loss.detach().cpu().numpy()), flush=flush)
+                  'total loss: ' + str(loss.detach().cpu().numpy() * gradient_accumulation_steps), flush=flush)
 
     # Final process of loss dict
     epoch_loss /= total_iters
@@ -185,7 +202,8 @@ def train_one_epoch_teaching_mask(student_model: torch.nn.Module,
                                   stu_buffer_mask: List[torch.Tensor] = None,
                                   res_dict: dict = None,
                                   use_pseudo_label_weights: bool = False,
-                                  use_loss_student: bool = False):
+                                  use_loss_student: bool = False,
+                                  gradient_accumulation_steps: int = 1):
     """
     Train the student model with the teacher model, using only unlabeled training set target (plus masked target image)
     """
@@ -204,6 +222,9 @@ def train_one_epoch_teaching_mask(student_model: torch.nn.Module,
     # Training data statistics
     epoch_target_loss_dict = defaultdict(float)
     total_iters = len(target_loader)
+    
+    # Initialize optimizer gradients
+    optimizer.zero_grad()
 
     for iter in range(total_iters):
         # Target teacher forward
@@ -271,14 +292,20 @@ def train_one_epoch_teaching_mask(student_model: torch.nn.Module,
                 loss_init_student = init_student_loss + coef_masked_img * masked_init_student_loss
                 loss += loss_init_student
 
+        # Scale the loss according to gradient accumulation steps
+        scaled_loss = loss / gradient_accumulation_steps
+        
         # Backward
-        optimizer.zero_grad()
-        loss.backward()
-        if clip_max_norm > 0:
-            torch.nn.utils.clip_grad_norm_(student_model.parameters(), clip_max_norm)
-        optimizer.step()
+        scaled_loss.backward()
+        
+        # Only perform optimization step after accumulating gradients
+        if (iter + 1) % gradient_accumulation_steps == 0 or (iter + 1) == total_iters:
+            if clip_max_norm > 0:
+                torch.nn.utils.clip_grad_norm_(student_model.parameters(), clip_max_norm)
+            optimizer.step()
+            optimizer.zero_grad()
 
-        # Record epoch losses
+        # Record epoch losses (use the original non-scaled loss for logging)
         epoch_loss += loss.detach()
 
         # update loss_dict
@@ -326,7 +353,6 @@ def train_one_epoch_teaching_mask(student_model: torch.nn.Module,
                     for key, value in state_dict.items():
                         state_dict[key] = alpha_ema * value + (1 - alpha_ema) * student_state_dict[key].detach()
                     teacher_model.load_state_dict(state_dict)
-
 
         # Data pre-fetch
         target_images, target_masks, _ = target_fetcher.next()
