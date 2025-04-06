@@ -126,7 +126,7 @@ def single_domain_training(model, device):
         if args.distributed and hasattr(train_loader.sampler, 'set_epoch'):
             train_loader.sampler.set_epoch(epoch)
         # Train for one epoch
-        loss_train = train_one_epoch_standard(
+        loss_train, loss_train_dict = train_one_epoch_standard(
             model=model,
             criterion=criterion,
             data_loader=train_loader,
@@ -138,7 +138,7 @@ def single_domain_training(model, device):
             flush=args.flush,
             gradient_accumulation_steps=args.gradient_accumulation_steps
         )
-        write_loss(epoch, 'single_domain', loss_train)
+        write_loss(epoch, 'single_domain', loss_train, loss_train_dict)
         lr_scheduler.step()
         # Evaluate
         ap50_per_class, loss_val = evaluate(
